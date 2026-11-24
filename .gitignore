@@ -1,0 +1,12 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.log
+*.db
+*.db-*
+*.sqlite*
+opencode.json
+opencode.jsonc
+cli.json

@@ -2,6 +2,7 @@
 import { createInterface } from "node:readline"
 
 const fullAccess = process.argv.includes("--dangerously-skip-permissions")
+const exerciseFeatures = process.env.AGY_MOCK_FEATURES === "1"
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n")
 const configOptions = [
   { id: "model", category: "model", type: "select", currentValue: "gemini-test", options: [
@@ -18,8 +19,15 @@ const configOptions = [
 ]
 let approvalFor
 let slow
+let questionFor
+let firstFeatureSession
+let freshFeatureSession
+let rewindFeatureSession
 const sessionId = fullAccess ? "unrestricted-test" : "test"
 let currentSession = sessionId
+let sessionCount = 0
+let forkSource
+const forkSessions = new Set()
 const update = (update) => send({ method: "session/update", params: { sessionId: currentSession, update } })
 const chunk = (sessionUpdate, text) => update({ sessionUpdate, content: { type: "text", text } })
 const result = (id, value) => send({ id, result: value })
@@ -28,19 +36,28 @@ rl.on("line", (line) => {
   const { id, method, params, result: reply } = JSON.parse(line)
   switch (method) {
     case "initialize":
-      return result(id, { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { list: {}, close: {}, resume: {} } } })
+      return result(id, {
+        protocolVersion: 1,
+        ...(exerciseFeatures ? { agentInfo: { name: "Mock Antigravity", version: "1.5.18" } } : {}),
+        agentCapabilities: {
+          loadSession: true, promptCapabilities: { image: true, embeddedContext: true },
+          sessionCapabilities: { list: {}, close: {}, resume: {} },
+        },
+      })
     case "session/new":
     case "session/load":
     case "session/resume":
       if ("systemPrompt" in params || params.mcpServers.length) throw Error("Expected a thin client")
-      currentSession = params.sessionId ?? sessionId
+      currentSession = params.sessionId ?? (sessionCount++ === 0 ? sessionId : `${sessionId}-${sessionCount}`)
       configOptions[0].currentValue = "gemini-test"
       configOptions[1].currentValue = "low"
       configOptions[1].options = [{ value: "low", name: "Low" }, { value: "high", name: "High" }]
       if (method === "session/load") {
         chunk("user_message_chunk", "Old question")
-        chunk("agent_message_chunk", "Old answer")
+        chunk("agent_message_chunk", exerciseFeatures && params.sessionId === "mock-child-session"
+          ? "Read-only child transcript" : "Old answer")
       }
+      if (exerciseFeatures) update({ sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact" }] })
       return result(id, { sessionId: currentSession, configOptions })
     case "session/list":
       return result(id, { sessions: [{ sessionId: "old", title: "Old chat" }] })
@@ -57,8 +74,108 @@ rl.on("line", (line) => {
       }
       return result(id, { configOptions })
     case "session/prompt": {
-      if (params.prompt.length !== 1 || params.prompt[0].type !== "text") throw Error("Expected a raw user prompt")
-      const text = params.prompt[0].text
+      currentSession = params.sessionId
+      const text = params.prompt[0]?.text
+      if (exerciseFeatures) {
+        if (text?.startsWith("Check attachment")) {
+          const resource = params.prompt[1]?.resource
+          if (resource?.text !== "Fixture attachment contents\n") throw Error("Attachment was not forwarded")
+          chunk("agent_message_chunk", "Attachment reached Antigravity")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text === "Ask mock") {
+          questionFor = id
+          firstFeatureSession = currentSession
+          send({ id: "question", method: "elicitation/create", params: {
+            sessionId: currentSession, mode: "form", message: "The agent has a question.",
+            requestedSchema: { type: "object", required: ["q0"], properties: {
+              q0: { type: "string", title: "Choose the package manager", oneOf: [{ const: "pnpm", title: "pnpm" }] },
+            } },
+          } })
+          return
+        }
+        if (text === "Begin steer") {
+          slow = id
+          chunk("agent_message_chunk", "Steering is ready")
+          return
+        }
+        if (text === "Begin queue") {
+          chunk("agent_message_chunk", "Queue is ready")
+          setTimeout(() => result(id, { stopReason: "end_turn" }), 1500)
+          return
+        }
+        if (text === "Use native steer") {
+          if (!slow) throw Error("A steer must reach ACP before the original prompt returns")
+          result(slow, { stopReason: "end_turn" })
+          slow = undefined
+          chunk("agent_message_chunk", "Native steer reached Antigravity")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text === "/compact") {
+          chunk("agent_message_chunk", "Native compaction ran")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text === "After clear") {
+          if (currentSession === firstFeatureSession) throw Error("Clear must open a new native session")
+          freshFeatureSession = currentSession
+          chunk("agent_message_chunk", "A fresh Antigravity session answered")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text?.endsWith("Check side-chat result")) {
+          if (!text.includes("Side chat found the missing fixture.") || text.includes("A fresh Antigravity session answered"))
+            throw Error("Expected only the side-chat addition")
+          chunk("agent_message_chunk", "Antigravity received the side-chat result")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text?.endsWith("Check switched history")) {
+          if (currentSession === freshFeatureSession || !text.includes("Other provider answered"))
+            throw Error("Provider switch must rebuild with the intervening history")
+          chunk("agent_message_chunk", "Antigravity received the intervening history")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text === "Launch mock background") {
+          const child = { toolCallId: "native-child", title: "Run invoke_subagent" }
+          const owner = currentSession
+          update({ ...child, sessionUpdate: "tool_call", status: "in_progress", rawInput: { Prompt: "Check the fixture" } })
+          chunk("agent_message_chunk", "Native child was launched")
+          result(id, { stopReason: "end_turn" })
+          setTimeout(() => {
+            currentSession = owner
+            update({ ...child, sessionUpdate: "tool_call_update", status: "completed",
+              rawOutput: { conversation_id: "mock-child-session" },
+            })
+            chunk("agent_message_chunk", "Mock detached result")
+          }, 300)
+          return
+        }
+        if (text === "Remove this decision") rewindFeatureSession = currentSession
+        if (text?.endsWith("Check the rewind")) {
+          if (currentSession === rewindFeatureSession || !text.includes("Keep this decision") || text.includes("Remove this decision"))
+            throw Error("Expected the rewound transcript without the removed turn")
+          chunk("agent_message_chunk", "Antigravity resumed with the rewound history")
+          return result(id, { stopReason: "end_turn" })
+        }
+      }
+      if (params.prompt.length !== 1 || params.prompt[0].type !== "text") throw Error("Expected a text prompt")
+      if (process.env.AGY_MOCK_FORK) {
+        if (text === "Fork source first") forkSource = currentSession
+        if (text.endsWith("Fork first message")) {
+          if (currentSession === forkSource || !text.endsWith("\n\nLatest user message:\nFork first message"))
+            throw Error("Expected a new Antigravity session with a fork transcript")
+          const history = JSON.parse(text.split("\n\n")[1])
+          const expected = [{ role: "user", text: "Fork source first" }, { role: "assistant", text: "Mock reply: Fork source first" }]
+          if (!text.includes("1 history entries omitted") || JSON.stringify(history) !== JSON.stringify(expected))
+            throw Error("Incorrect or oversized fork history")
+          forkSessions.add(currentSession)
+          chunk("agent_message_chunk", "Fork received the earlier turn")
+          return result(id, { stopReason: "end_turn" })
+        }
+        if (text === "Fork second message") {
+          if (!forkSessions.has(currentSession)) throw Error("Expected the same seeded fork")
+          chunk("agent_message_chunk", "Fork continued without resending history")
+          return result(id, { stopReason: "end_turn" })
+        }
+      }
       if (text === "Check model") {
         if (configOptions[0].currentValue !== "third-party" || configOptions[1].currentValue !== "extra")
           throw Error("Expected the extra variant of the third-party model")
@@ -90,12 +207,25 @@ rl.on("line", (line) => {
       }
       chunk("agent_message_chunk", "Mock reply: ")
       chunk("agent_message_chunk", text)
+      if (process.env.AGY_MOCK_FORK && text === "Fork source first") {
+        update({ sessionUpdate: "tool_call", toolCallId: "large-log", title: "Large log", status: "completed",
+          content: [{ type: "content", content: { type: "text", text: "log ".repeat(16000) } }],
+        })
+      }
       return result(id, { stopReason: "end_turn" })
     }
     case "session/cancel":
       if (slow) result(slow, { stopReason: "cancelled" })
       return
     default:
+      if (id === "question") {
+        if (reply.action !== "accept" || reply.content?.q0 !== "pnpm") throw Error("Question did not receive the selected answer")
+        update({ sessionUpdate: "tool_call", toolCallId: "steps-1", title: "Run update_steps", status: "completed",
+          rawInput: { steps: [{ title: "Build hello", status: "done" }] },
+        })
+        chunk("agent_message_chunk", "Question was answered")
+        return result(questionFor, { stopReason: "end_turn" })
+      }
       if (id === "permission") {
         chunk("agent_message_chunk", reply.outcome.optionId === "yes" ? "Mock edit approved" : "Mock edit denied")
         return result(approvalFor, { stopReason: "end_turn" })

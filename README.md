@@ -36,9 +36,9 @@ by your `agy acp` session. Send a text prompt with **Enter**.
 The plugin runs the official `agy acp` subprocess over stdio. Antigravity owns
 its system prompt, tools, and conversation state. The plugin forwards new,
 interactive text prompts and displays replies and tool activity in OpenCode.
-It does not forward OpenCode's system prompt, tool definitions, or previous
-chat history. It requests Antigravity's `--sandbox` mode at launch; sandbox
-availability depends on the host and CLI version.
+It does not forward OpenCode's system prompt or tool definitions. It requests
+Antigravity's `--sandbox` mode at launch; sandbox availability depends on the
+host and CLI version.
 
 **Permissions:** Antigravity decides which actions to ask about. OpenCode can
 deny or present an approval prompt for those actions, but it cannot intercept
@@ -53,12 +53,39 @@ Antigravity chats and enabled subagents. OpenCode's Plan agent still uses a
 sandboxed ACP process with approval prompts. Full access is off by default.
 
 This is an experimental third-party integration. It uses OpenCode TUI
-internals that can change between releases. Interactive chats support text
-entered with Enter; they do not accept headless runs or queued prompts. The
+internals that can change between releases. Submit from the composer; use
+OpenCode's queue shortcut to wait for the next turn. On `agy` 1.5+ a plain-text
+follow-up can steer a running turn. Headless runs are not supported. The
 interactive check is not a security boundary against another local API client.
-The plugin does not carry context between Antigravity and other providers. See Google's
+See Google's
 [ACP documentation](https://antigravity.google/docs/ide/extensions/acp) and
 [terms](https://antigravity.google/terms) for applicable usage limits.
+
+## Fork a session
+
+OpenCode's `/fork` copies the transcript to the chosen point. When you send
+your first message in the fork, the plugin starts a separate Antigravity
+conversation and includes the copied conversation text as context. It uses
+available summaries for compacted history and prioritizes recent messages
+when the history exceeds the context budget. It does not rerun old prompts
+or tools. Later messages continue in the new conversation.
+
+## Work in a session
+
+- Attach files in the native composer. The bridge sends supported image and
+  audio blocks directly, embeds small text files, and supplies other files as
+  links to private temporary copies.
+- Answer Antigravity questions from their dialogs, or use `/agy-answer` to
+  reopen a pending question. `/agy-work` shows task steps, reported subagent
+  updates, child transcripts when Antigravity exposes them, and recent
+  background replies. `/agy-stop` also stops detached work.
+- The next prompt picks up a side-chat result brought back by `better-sidechats`.
+  On switching back from another provider, rewinding past a delivered prompt,
+  or losing a native session, Antigravity rebuilds from OpenCode's retained
+  history.
+- OpenCode's `/compact` uses Antigravity's native command when the session
+  advertises it. `/agy-clear` starts a new Antigravity conversation while
+  leaving the visible OpenCode transcript intact.
 
 ## Delegate from another OpenCode session
 
@@ -95,6 +122,8 @@ python3 test-tui.py
 python3 test-tui.py --full-access
 python3 test-tui.py --subagent enabled
 python3 test-tui.py --subagent disabled
+python3 test-tui.py --fork
+python3 test-tui.py --features
 ```
 
 The TUI tests need `tmux`, OpenCode, and Node.js and use mock agents in a temporary

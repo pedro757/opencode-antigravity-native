@@ -11,6 +11,18 @@ const usage = {
 export default Plugin.define({
   id: "test.antigravity-mock-parent",
   async setup(ctx) {
+    if (process.env.AGY_MOCK_FEATURES) {
+      await ctx.command.transform((editor) => editor.add({
+        name: "mock-bring-back",
+        description: "Write a test side-chat result",
+        execute: async ({ sessionID }) => {
+          await ctx.session.synthetic({
+            sessionID, text: "Side chat found the missing fixture.",
+            description: "Mock side-chat result", metadata: { source: "sidechat" }, resume: false,
+          })
+        },
+      }))
+    }
     await ctx.provider.transform((editor) => editor.add({
       info: { ...Provider.Info.empty(providerID), activation: "enabled", package: `aisdk:${packageName}` },
       models: [{
@@ -30,13 +42,14 @@ export default Plugin.define({
           supportedUrls: {},
           async doStream(options: { prompt: unknown }) {
             const history = JSON.stringify(options.prompt)
+            const useOtherProvider = history.includes("Ask the other provider")
             const completed = history.includes("Mock reply: ") && history.includes("Check the child wiring")
             const blocked = history.includes("Antigravity subagent delegation is disabled")
             const started = history.includes("Check the child wiring")
             return {
               stream: new ReadableStream({
                 start(controller) {
-                  if (!started) {
+                  if (!started && !useOtherProvider) {
                     controller.enqueue({
                       type: "tool-call",
                       toolCallId: "mock-delegation",
@@ -48,13 +61,13 @@ export default Plugin.define({
                       }),
                     })
                   } else {
-                    const delta = completed ? "Parent received Antigravity reply" :
+                    const delta = useOtherProvider ? "Other provider answered" : completed ? "Parent received Antigravity reply" :
                       blocked ? "Parent received delegation error" : "Parent is ready for the child report"
                     controller.enqueue({ type: "text-start", id: "parent" })
                     controller.enqueue({ type: "text-delta", id: "parent", delta })
                     controller.enqueue({ type: "text-end", id: "parent" })
                   }
-                  controller.enqueue({ type: "finish", finishReason: { unified: started ? "stop" : "tool-calls" }, usage })
+                  controller.enqueue({ type: "finish", finishReason: { unified: started || useOtherProvider ? "stop" : "tool-calls" }, usage })
                   controller.close()
                 },
               }),

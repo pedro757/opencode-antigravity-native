@@ -12,10 +12,11 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--checkout", help="Optional development checkout; defaults to the installed opencode")
 mode = parser.add_mutually_exclusive_group()
 mode.add_argument("--real-catalog", action="store_true", help="Discover only; never send a live prompt")
-mode.add_argument("--subagent", choices=["enabled", "disabled"], help="Test native delegation with mock agents")
+mode.add_argument("--subagent", choices=["enabled", "disabled", "override"], help="Test native delegation with mock agents")
 mode.add_argument("--full-access", action="store_true", help="Test opt-in approval skipping and Plan isolation with a mock agent")
 mode.add_argument("--fork", action="store_true", help="Test inherited context with a mock agent")
 mode.add_argument("--features", action="store_true", help="Test Antigravity questions, native steering, and session controls")
+mode.add_argument("--variants", action="store_true", help="Test explicit thinking levels and resetting to Default")
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 workspace = tempfile.TemporaryDirectory(prefix="antigravity-native-test-", ignore_cleanup_errors=True)
@@ -61,14 +62,14 @@ if args.full_access:
 if args.subagent:
     settings = {
         "plugins": [
-            {"package": str(here), "options": {"allowSubagents": args.subagent == "enabled"}},
+            {"package": str(here), "options": {"allowSubagents": args.subagent != "disabled"}},
             str(here / "fixtures/mock-parent"),
         ],
         "model": "mock-parent/test",
         "agents": {"antigravity": {
             "description": "Run a task with Antigravity",
             "mode": "subagent",
-            "model": "antigravity-acp/gemini-test",
+            "model": "antigravity-acp/gemini-test#high",
         }},
     }
 env = {
@@ -92,8 +93,8 @@ try:
     wait("ctrl+p")
     if args.subagent:
         wait("Mock parent model")
-        send("Delegate to Antigravity")
-        wait("Parent received Antigravity reply" if args.subagent == "enabled" else "Parent received delegation error")
+        send("Delegate to Antigravity with low" if args.subagent == "override" else "Delegate to Antigravity")
+        wait("Parent received delegation error" if args.subagent == "disabled" else "Parent received Antigravity reply")
     else:
         send("/models")
         wait("Search models")
@@ -103,7 +104,40 @@ try:
         wait("Select variant")
         keys("Enter")
         wait("Select variant", present=False)
-    if args.features:
+    if args.variants:
+        send("/variants")
+        wait("Select variant")
+        keys("Down", "Down", "Enter")
+        wait("Select variant", present=False)
+        send("Check variant explicit")
+        wait("ACP variant: gemini-test/high (turn 1)")
+        send("/variants")
+        wait("Select variant")
+        keys("Up", "Up", "Enter")
+        wait("Select variant", present=False)
+        send("Check variant default")
+        wait("ACP variant: gemini-test/low (turn 2)")
+        send("/models")
+        wait("Search models")
+        keys("-l", "Gemini other")
+        wait("Google Antigravity")
+        keys("Enter")
+        wait("Select variant")
+        wait("medium")
+        keys("Enter")
+        wait("Select variant", present=False)
+        send("Check variant switched")
+        wait("ACP variant: gemini-other/medium (turn 3)")
+        send("/models")
+        wait("Search models")
+        keys("-l", "Fixed effort model")
+        wait("Google Antigravity")
+        keys("Enter")
+        wait("Search models", present=False)
+        assert "Select variant" not in tm("capture-pane", "-p", "-t", "smoke")
+        send("Check variant fixed")
+        wait("ACP variant: fixed-effort/fixed (turn 4)")
+    elif args.features:
         send("Ask mock")
         wait("Choose the package manager")
         keys("Enter")

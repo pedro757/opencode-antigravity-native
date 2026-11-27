@@ -29,7 +29,8 @@ Add the plugin path to the `plugins` array in your global
 
 In OpenCode, run `/reload` if needed, open `/models`, and select a model under
 **Google Antigravity**. The plugin lists the models and thinking levels offered
-by your `agy acp` session. Send a text prompt with **Enter**.
+by your `agy acp` session. Use `/variants` to change the thinking level or
+restore **Default** for the selected model. Send a text prompt with **Enter**.
 
 ## How it works
 
@@ -122,8 +123,10 @@ python3 test-tui.py
 python3 test-tui.py --full-access
 python3 test-tui.py --subagent enabled
 python3 test-tui.py --subagent disabled
+python3 test-tui.py --subagent override
 python3 test-tui.py --fork
 python3 test-tui.py --features
+python3 test-tui.py --variants
 ```
 
 The TUI tests need `tmux`, OpenCode, and Node.js and use mock agents in a temporary

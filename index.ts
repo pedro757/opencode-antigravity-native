@@ -17,6 +17,7 @@ const providerID = Provider.ID.make("antigravity-acp")
 const sdkPackage = "@local/antigravity-acp"
 const interactive = "antigravity-acp/interactive"
 const tokenKey = "antigravity-acp/ticket"
+const catalogKey = "catalog/2"
 const forkHistoryBudget = 64_000
 const clearCommand = "/agy-clear"
 const text = (value: unknown) => typeof value === "string" ? value : ""
@@ -426,6 +427,8 @@ export default Plugin.define({
         })
         if (response.configOptions) {
           item.options = response.configOptions
+          if (required && find(item.options, name)?.currentValue !== value)
+            throw new Error(`Antigravity did not apply ${name} ${value}.`)
           return
         }
       }
@@ -514,7 +517,8 @@ export default Plugin.define({
                   signal.throwIfAborted()
                   if (!transferred) {
                     await select(client, item, "model", modelId)
-                    if (settings?.effort) await select(client, item, "thought_level", text(settings.effort))
+                    const effort = text(settings?.effort)
+                    if (effort) await select(client, item, "thought_level", effort)
                     // Preserve a real read-only agent mode.
                     await select(client, item, "mode", agent === "plan" ? "plan" : "default", agent === "plan")
                   }
@@ -751,7 +755,7 @@ export default Plugin.define({
       }
     })().catch(() => {})
     void (async () => {
-      const cached = await ctx.storage.get("catalog")
+      const cached = await ctx.storage.get(catalogKey)
       if (closed) return
       if (cached && typeof cached === "object" && !Array.isArray(cached) && Array.isArray(cached.models)) {
         state.models = cached.models.map((item) => Model.Info.make(item as Model.Info))
@@ -766,12 +770,31 @@ export default Plugin.define({
         if (!sessionId) throw new Error("Antigravity did not return a conversation ID.")
         const catalog = { id: sessionId, options: configs(setup), connection }
         const model = find(catalog.options, "model")
-        const models: Model.Info[] = []
-        for (const choice of options(model)) {
+        const initialEffort = find(catalog.options, "thought_level")?.currentValue
+        const choices = options(model)
+        const efforts = new Map<string, { current?: string; levels: Choice[] }>()
+        let withoutEffort: string | undefined
+        for (const choice of choices) {
           if (closed) return
           // Modern ACP reports thinking levels for the selected model only.
           if (model?.id !== "legacy-model") await select(client, catalog, "model", choice.value)
-          const levels = options(find(catalog.options, "thought_level"))
+          const thought = find(catalog.options, "thought_level")
+          const levels = options(thought)
+          efforts.set(choice.value, { current: thought?.currentValue, levels })
+          if (!levels.length) withoutEffort ??= choice.value
+        }
+        const models: Model.Info[] = []
+        for (const choice of choices) {
+          if (closed) return
+          const { current, levels } = efforts.get(choice.value)!
+          let defaultEffort = levels.some((level) => level.value === initialEffort) ? initialEffort : current
+          if (levels.length && withoutEffort) {
+            // agy carries a compatible level between models. A model without levels clears
+            // that selection, so switching back reports the target model's native default.
+            await select(client, catalog, "model", withoutEffort)
+            await select(client, catalog, "model", choice.value)
+            defaultEffort = find(catalog.options, "thought_level")?.currentValue
+          }
           models.push({
             ...Model.Info.default(providerID, Model.ID.make(choice.value)),
             name: choice.name,
@@ -787,12 +810,13 @@ export default Plugin.define({
               output: ["text"], tools: false,
             },
             cost: [],
+            ...(defaultEffort ? { settings: { effort: defaultEffort } } : {}),
             variants: levels.map((level) => ({ id: Model.VariantID.make(level.value), settings: { effort: level.value } })),
           })
         }
         if (!closed && models.length) {
           state.models = models
-          await ctx.storage.set("catalog", { models: models as never })
+          await ctx.storage.set(catalogKey, { models: models as never })
           await ctx.provider.reload()
         }
       } finally {

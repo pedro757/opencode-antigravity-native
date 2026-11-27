@@ -9,6 +9,7 @@ const configOptions = [
     { value: "gemini-test", name: "Gemini test" },
     { value: "gemini-other", name: "Gemini other" },
     { value: "third-party", name: "Third-party model" },
+    { value: "fixed-effort", name: "Fixed effort model" },
   ] },
   { id: "thought_level", category: "thought_level", type: "select", currentValue: "low", options: [
     { value: "low", name: "Low" }, { value: "high", name: "High" },
@@ -28,6 +29,7 @@ let currentSession = sessionId
 let sessionCount = 0
 let forkSource
 const forkSessions = new Set()
+const variantSessions = new Map()
 const update = (update) => send({ method: "session/update", params: { sessionId: currentSession, update } })
 const chunk = (sessionUpdate, text) => update({ sessionUpdate, content: { type: "text", text } })
 const result = (id, value) => send({ id, result: value })
@@ -66,16 +68,32 @@ rl.on("line", (line) => {
     case "session/set_config_option":
       configOptions.find((option) => option.id === params.configId).currentValue = params.value
       if (params.configId === "model") {
-        const levels = params.value === "third-party"
-          ? [{ value: "extra", name: "Extra" }]
-          : [{ value: "low", name: "Low" }, { value: "high", name: "High" }]
-        configOptions[1].currentValue = levels[0].value
-        configOptions[1].options = levels
+        const levels = {
+          "gemini-test": ["low", "high"],
+          "gemini-other": ["medium", "high"],
+          "third-party": ["extra"],
+          "fixed-effort": [],
+        }[params.value]
+        const thought = configOptions[1]
+        if (!levels.includes(thought.currentValue)) thought.currentValue = levels[0] ?? ""
+        thought.options = levels.map((value) => ({ value, name: value }))
       }
       return result(id, { configOptions })
     case "session/prompt": {
       currentSession = params.sessionId
       const text = params.prompt[0]?.text
+      if (text?.startsWith("Check variant ")) {
+        const variant = configOptions[1].currentValue || "fixed"
+        const previous = variantSessions.get(currentSession) ?? 0
+        variantSessions.set(currentSession, previous + 1)
+        chunk("agent_message_chunk", `ACP variant: ${configOptions[0].currentValue}/${variant} (turn ${previous + 1})`)
+        return result(id, { stopReason: "end_turn" })
+      }
+      if (text?.includes("Check the child wiring")) {
+        const expected = text.includes("at low") ? "low" : "high"
+        if (configOptions[1].currentValue !== expected)
+          throw Error(`The delegated model must use the ${expected} variant`)
+      }
       if (exerciseFeatures) {
         if (text?.startsWith("Check attachment")) {
           const resource = params.prompt[1]?.resource

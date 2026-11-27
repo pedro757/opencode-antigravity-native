@@ -43,6 +43,7 @@ export default Plugin.define({
           async doStream(options: { prompt: unknown }) {
             const history = JSON.stringify(options.prompt)
             const useOtherProvider = history.includes("Ask the other provider")
+            const lowVariant = history.includes("Delegate to Antigravity with low")
             const completed = history.includes("Mock reply: ") && history.includes("Check the child wiring")
             const blocked = history.includes("Antigravity subagent delegation is disabled")
             const started = history.includes("Check the child wiring")
@@ -57,7 +58,8 @@ export default Plugin.define({
                       input: JSON.stringify({
                         agent: "antigravity",
                         description: "Check child wiring",
-                        prompt: "Check the child wiring",
+                         prompt: lowVariant ? "Check the child wiring at low" : "Check the child wiring",
+                         ...(lowVariant ? { model: "antigravity-acp/gemini-test#low" } : {}),
                       }),
                     })
                   } else {

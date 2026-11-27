@@ -34,6 +34,9 @@ rl.on("line", (line) => {
     case "session/resume":
       if ("systemPrompt" in params || params.mcpServers.length) throw Error("Expected a thin client")
       currentSession = params.sessionId ?? sessionId
+      configOptions[0].currentValue = "gemini-test"
+      configOptions[1].currentValue = "low"
+      configOptions[1].options = [{ value: "low", name: "Low" }, { value: "high", name: "High" }]
       if (method === "session/load") {
         chunk("user_message_chunk", "Old question")
         chunk("agent_message_chunk", "Old answer")
@@ -45,10 +48,23 @@ rl.on("line", (line) => {
       return result(id, {})
     case "session/set_config_option":
       configOptions.find((option) => option.id === params.configId).currentValue = params.value
+      if (params.configId === "model") {
+        const levels = params.value === "third-party"
+          ? [{ value: "extra", name: "Extra" }]
+          : [{ value: "low", name: "Low" }, { value: "high", name: "High" }]
+        configOptions[1].currentValue = levels[0].value
+        configOptions[1].options = levels
+      }
       return result(id, { configOptions })
     case "session/prompt": {
       if (params.prompt.length !== 1 || params.prompt[0].type !== "text") throw Error("Expected a raw user prompt")
       const text = params.prompt[0].text
+      if (text === "Check model") {
+        if (configOptions[0].currentValue !== "third-party" || configOptions[1].currentValue !== "extra")
+          throw Error("Expected the extra variant of the third-party model")
+        chunk("agent_message_chunk", "Third-party model selected")
+        return result(id, { stopReason: "end_turn" })
+      }
       if (text === "Check plan") {
         if (fullAccess || configOptions.find((option) => option.id === "mode").currentValue !== "plan")
           throw Error("Expected a sandboxed Plan session")

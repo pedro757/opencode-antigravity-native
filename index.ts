@@ -12,7 +12,6 @@ const sdkPackage = "@local/antigravity-acp"
 const interactive = "antigravity-acp/interactive"
 const tokenKey = "antigravity-acp/ticket"
 const text = (value: unknown) => typeof value === "string" ? value : ""
-const gemini = (id: string) => /^gemini(?:[-_. ]|$)/i.test(id)
 
 type Choice = { value: string; name: string }
 type Config = {
@@ -300,29 +299,39 @@ export default Plugin.define({
       if (cached && typeof cached === "object" && !Array.isArray(cached) && Array.isArray(cached.models)) {
         state.models = cached.models.map((item) => Model.Info.make(item as Model.Info))
         await ctx.provider.reload()
-        if (typeof cached.at === "number" && Date.now() - cached.at < 30 * 60_000) return
       }
-      const { client, caps } = await connect(false)
+      const connection = await connect(false)
+      const { client, caps } = connection
+      let sessionId: string | undefined
       try {
         const setup = await client.request<Setup>("session/new", { cwd, mcpServers: [] })
-        const values = configs(setup)
-        const levels = options(find(values, "thought_level"))
-        state.models = options(find(values, "model")).filter((option) => gemini(option.value)).map((item) => ({
-          ...Model.Info.default(providerID, Model.ID.make(item.value)),
-          name: item.name,
-          limit: { context: 0, output: 0 },
-          capabilities: { input: ["text"], output: ["text"], tools: false },
-          cost: [],
-          variants: levels.map((level) => ({ id: Model.VariantID.make(level.value), settings: { effort: level.value } })),
-        }))
-        if (closed) return
-        if (state.models.length) {
-          await ctx.storage.set("catalog", { at: Date.now(), models: state.models as never })
+        sessionId = setup.sessionId
+        if (!sessionId) throw new Error("Antigravity did not return a conversation ID.")
+        const catalog = { id: sessionId, options: configs(setup), connection }
+        const model = find(catalog.options, "model")
+        const models: Model.Info[] = []
+        for (const choice of options(model)) {
+          if (closed) return
+          // Modern ACP reports thinking levels for the selected model only.
+          if (model?.id !== "legacy-model") await select(client, catalog, "model", choice.value)
+          const levels = options(find(catalog.options, "thought_level"))
+          models.push({
+            ...Model.Info.default(providerID, Model.ID.make(choice.value)),
+            name: choice.name,
+            limit: { context: 0, output: 0 },
+            capabilities: { input: ["text"], output: ["text"], tools: false },
+            cost: [],
+            variants: levels.map((level) => ({ id: Model.VariantID.make(level.value), settings: { effort: level.value } })),
+          })
+        }
+        if (!closed && models.length) {
+          state.models = models
+          await ctx.storage.set("catalog", { models: models as never })
           await ctx.provider.reload()
         }
-        if (setup.sessionId && caps.sessionCapabilities?.close)
-          await client.request("session/close", { sessionId: setup.sessionId })
       } finally {
+        if (sessionId && caps.sessionCapabilities?.close)
+          await client.request("session/close", { sessionId }).catch(() => {})
         if (!active.size && !threads.size) client.close()
       }
     })().catch((error) => { if (!closed) console.warn("Antigravity ACP: could not load models", status(error)) })

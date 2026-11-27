@@ -27,8 +27,9 @@ Add the plugin path to the `plugins` array in your global
 }
 ```
 
-In OpenCode, run `/reload` if needed, open `/models`, and select a Gemini model
-under **Google Antigravity**. Send a text prompt with **Enter**.
+In OpenCode, run `/reload` if needed, open `/models`, and select a model under
+**Google Antigravity**. The plugin lists the models and thinking levels offered
+by your `agy acp` session. Send a text prompt with **Enter**.
 
 ## How it works
 

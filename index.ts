@@ -516,10 +516,10 @@ export default Plugin.define({
                   signal.throwIfAborted()
                   if (!transferred) {
                     await select(client, item, "model", modelId)
-                    const effort = text(settings?.effort)
-                    if (effort) await select(client, item, "thought_level", effort)
                     // Preserve a real read-only agent mode.
                     await select(client, item, "mode", agent === "plan" ? "plan" : "default", agent === "plan")
+                    const effort = text(settings?.effort)
+                    if (effort) await select(client, item, "thought_level", effort)
                   }
                   signal.throwIfAborted()
                   turns.set(item.id, view)
@@ -680,6 +680,13 @@ export default Plugin.define({
         return
       }
       const { client, turns } = item.connection
+      const { data: models } = await ctx.model.list()
+      const model = models.find((model) =>
+        model.providerID === providerID && model.id === event.model.id)
+      const variant = model?.variants?.find((variant) => variant.id === event.model.variant)
+      const effort = text(variant?.settings?.effort) || event.model.variant || text(model?.settings?.effort)
+      await select(client, item, "model", event.model.id)
+      if (effort) await select(client, item, "thought_level", effort)
       const operation = new AbortController()
       const signal = AbortSignal.any([operation.signal, lifetime.signal])
       let reply = ""

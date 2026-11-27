@@ -12,7 +12,7 @@ const configOptions = [
     { value: "fixed-effort", name: "Fixed effort model" },
   ] },
   { id: "thought_level", category: "thought_level", type: "select", currentValue: "low", options: [
-    { value: "low", name: "Low" }, { value: "high", name: "High" },
+    { value: "low", name: "Low" }, { value: "high", name: "High" }, { value: "xhigh", name: "Extra High" },
   ] },
   { id: "mode", category: "mode", type: "select", currentValue: "default", options: [
     { value: "default", name: "Default" }, { value: "plan", name: "Plan" },
@@ -53,7 +53,7 @@ rl.on("line", (line) => {
       currentSession = params.sessionId ?? (sessionCount++ === 0 ? sessionId : `${sessionId}-${sessionCount}`)
       configOptions[0].currentValue = "gemini-test"
       configOptions[1].currentValue = "low"
-      configOptions[1].options = [{ value: "low", name: "Low" }, { value: "high", name: "High" }]
+      configOptions[1].options = [{ value: "low", name: "Low" }, { value: "high", name: "High" }, { value: "xhigh", name: "Extra High" }]
       if (method === "session/load") {
         chunk("user_message_chunk", "Old question")
         chunk("agent_message_chunk", exerciseFeatures && params.sessionId === "mock-child-session"
@@ -69,7 +69,7 @@ rl.on("line", (line) => {
       configOptions.find((option) => option.id === params.configId).currentValue = params.value
       if (params.configId === "model") {
         const levels = {
-          "gemini-test": ["low", "high"],
+          "gemini-test": ["low", "high", "xhigh"],
           "gemini-other": ["medium", "high"],
           "third-party": ["extra"],
           "fixed-effort": [],
@@ -140,7 +140,7 @@ rl.on("line", (line) => {
           return result(id, { stopReason: "end_turn" })
         }
         if (text === "/compact") {
-          chunk("agent_message_chunk", "Native compaction ran")
+          chunk("agent_message_chunk", `Native compaction ran at ${configOptions[1].currentValue}`)
           update({ sessionUpdate: "usage_update", used: 1200, size: 10000 })
           return result(id, { stopReason: "end_turn" })
         }

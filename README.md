@@ -31,6 +31,9 @@ In OpenCode, run `/reload` if needed, open `/models`, and select a model under
 **Google Antigravity**. The plugin lists the models and thinking levels offered
 by your `agy acp` session. Use `/variants` to change the thinking level or
 restore **Default** for the selected model. Send a text prompt with **Enter**.
+OpenCode applies its selection before dispatching a turn. Opening the same
+conversation separately in `agy` uses the CLI's own effort default; pass
+`--effort` if you want that invocation to use a specific level.
 
 Session titles use OpenCode's built-in title agent. For automatic titles, set
 `agents.title.model` to an available non-Antigravity model; the ACP bridge only

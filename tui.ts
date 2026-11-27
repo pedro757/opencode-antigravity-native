@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { KeyEvent } from "@opentui/core"
+import { registerContextFooter } from "./context-footer"
 import { questionSource, type NativeQuestion } from "./questions"
 import { Antigravity, type Work } from "./rpc"
 
@@ -14,6 +15,7 @@ function hasTag(error: unknown, ...tags: string[]) {
 export default Plugin.define({
   id: "local.antigravity-native",
   setup(ctx) {
+    registerContextFooter(ctx, providerID)
     const session = ctx.client.session
     const prompt = session.prompt
     let pending: { text: string; sessionID?: string; forkOf?: string; expires: number } | undefined

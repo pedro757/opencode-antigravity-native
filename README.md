@@ -80,6 +80,8 @@ or tools. Later messages continue in the new conversation.
 - Attach files in the native composer. The bridge sends supported image and
   audio blocks directly, embeds small text files, and supplies other files as
   links to private temporary copies.
+- The prompt footer shows the percentage of the context window Antigravity
+  reports after a turn or compaction.
 - Answer Antigravity questions in OpenCode's built-in question menu. Use
   `/agy-answer` to refresh pending questions. `/agy-work` shows task steps,
   reported subagent updates, child transcripts when Antigravity exposes them,

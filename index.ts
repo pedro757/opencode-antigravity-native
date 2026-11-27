@@ -10,6 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Acp, AcpError } from "./acp"
 import { attachmentBlocks } from "./attachments"
+import { contextUsageKey, readContextUsage, type ContextUsage } from "./context-usage"
 import { Antigravity, type Work } from "./rpc"
 import { elicitation, nativeQuestion, readAnswers, type Answers, type NativeQuestion, type Question } from "./questions"
 
@@ -584,6 +585,9 @@ export default Plugin.define({
                   controller.enqueue({
                     type: "finish",
                     finishReason: { unified: "stop", raw: outcome.stopReason },
+                    ...(renderer.contextUsage && {
+                      providerMetadata: { [providerID]: { [contextUsageKey]: renderer.contextUsage } },
+                    }),
                     usage: {
                       inputTokens: { total: usage?.inputTokens, noCache: undefined, cacheRead: usage?.cachedReadTokens, cacheWrite: usage?.cachedWriteTokens },
                       outputTokens: { total: usage?.outputTokens, text: undefined, reasoning: usage?.thoughtTokens },
@@ -679,10 +683,12 @@ export default Plugin.define({
       const operation = new AbortController()
       const signal = AbortSignal.any([operation.signal, lifetime.signal])
       let reply = ""
+      let contextUsage: ContextUsage | undefined
       turns.set(item.id, {
         sessionID, agent: event.agent, signal, cancelled: false,
         update(value) {
           const update = value as { sessionUpdate?: string; content?: { type?: string; text?: string } }
+          if (update.sessionUpdate === "usage_update") contextUsage = readContextUsage(update) ?? contextUsage
           if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text")
             reply += text(update.content.text)
         },
@@ -695,6 +701,7 @@ export default Plugin.define({
         event.result = {
           summary: [reply.trim(), fallback].filter(Boolean).join("\n\n") || "Antigravity compacted this conversation.",
           metadata,
+          ...(contextUsage && { native: { [contextUsageKey]: contextUsage } }),
         }
       } finally {
         operation.abort()
@@ -841,6 +848,7 @@ export default Plugin.define({
 type ToolCall = { id: string; name: string; input: unknown; done: boolean }
 function render(controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>) {
   const calls = new Map<string, ToolCall>()
+  let contextUsage: ContextUsage | undefined
   let last: "text" | "reasoning" | undefined
   let index = 0
   const send = (event: LanguageModelV3StreamPart) => controller.enqueue(event)
@@ -859,6 +867,7 @@ function render(controller: ReadableStreamDefaultController<LanguageModelV3Strea
     })
   }
   return {
+    get contextUsage() { return contextUsage },
     update(raw: unknown) {
       if (!raw || typeof raw !== "object") return
       const update = raw as {
@@ -866,6 +875,10 @@ function render(controller: ReadableStreamDefaultController<LanguageModelV3Strea
         name?: string; title?: string; rawInput?: unknown; status?: string
       }
       const type = update.sessionUpdate
+      if (type === "usage_update") {
+        contextUsage = readContextUsage(raw) ?? contextUsage
+        return
+      }
       if (type === "agent_message_chunk" || type === "agent_thought_chunk") {
         if (update.content?.type !== "text" || !update.content.text) return
         const kind = type === "agent_message_chunk" ? "text" : "reasoning"

@@ -141,6 +141,7 @@ rl.on("line", (line) => {
         }
         if (text === "/compact") {
           chunk("agent_message_chunk", "Native compaction ran")
+          update({ sessionUpdate: "usage_update", used: 1200, size: 10000 })
           return result(id, { stopReason: "end_turn" })
         }
         if (text === "After clear") {
@@ -179,7 +180,13 @@ rl.on("line", (line) => {
           }, 300)
           return
         }
-        if (text === "Remove this decision") rewindFeatureSession = currentSession
+        if (text === "Deliver queued turn" || text === "Keep this decision")
+          update({ sessionUpdate: "usage_update", used: 3300, size: 10000 })
+        if (text === "Remove this decision") {
+          rewindFeatureSession = currentSession
+          update({ sessionUpdate: "usage_update", used: 7200, size: 20000 })
+          update({ sessionUpdate: "usage_update", used: 7200, size: 0 })
+        }
         if (text?.endsWith("Check the rewind")) {
           if (currentSession === rewindFeatureSession || !text.includes("Keep this decision") || text.includes("Remove this decision"))
             throw Error("Expected the rewound transcript without the removed turn")

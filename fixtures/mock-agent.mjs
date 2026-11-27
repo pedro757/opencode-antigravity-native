@@ -106,9 +106,19 @@ rl.on("line", (line) => {
           firstFeatureSession = currentSession
           send({ id: "question", method: "elicitation/create", params: {
             sessionId: currentSession, mode: "form", message: "The agent has a question.",
-            requestedSchema: { type: "object", required: ["q0"], properties: {
+            requestedSchema: { type: "object", properties: {
               q0: { type: "string", title: "Choose the package manager", oneOf: [{ const: "pnpm", title: "pnpm" }] },
+              q0_other: { type: "string", title: "Other (optional)" },
             } },
+          } })
+          return
+        }
+        if (text === "Ask mock choice" || text === "Dismiss mock choice") {
+          const dismiss = text.startsWith("Dismiss")
+          send({ id: `${dismiss ? "dismiss" : "pick"}-${id}`, method: "session/request_permission", params: {
+            sessionId: currentSession,
+            toolCall: { toolCallId: `interaction_${id}`, title: "Choose the test runner" },
+            options: [{ optionId: "runner-1", name: "Bun" }],
           } })
           return
         }
@@ -161,6 +171,9 @@ rl.on("line", (line) => {
             currentSession = owner
             update({ ...child, sessionUpdate: "tool_call_update", status: "completed",
               rawOutput: { conversation_id: "mock-child-session" },
+            })
+            update({ ...child, sessionUpdate: "tool_call", toolCallId: "unlinked-child",
+              title: "Run launch_subagent without session ID", status: "completed",
             })
             chunk("agent_message_chunk", "Mock detached result")
           }, 300)
@@ -237,12 +250,22 @@ rl.on("line", (line) => {
       return
     default:
       if (id === "question") {
-        if (reply.action !== "accept" || reply.content?.q0 !== "pnpm") throw Error("Question did not receive the selected answer")
+        if (reply.action !== "accept" || reply.content?.q0 !== "pnpm" || "q0_other" in reply.content)
+          throw Error("Question did not receive the selected answer or included the skipped field")
         update({ sessionUpdate: "tool_call", toolCallId: "steps-1", title: "Run update_steps", status: "completed",
           rawInput: { steps: [{ title: "Build hello", status: "done" }] },
         })
         chunk("agent_message_chunk", "Question was answered")
         return result(questionFor, { stopReason: "end_turn" })
+      }
+      if (typeof id === "string" && /^(pick|dismiss)-/.test(id)) {
+        const [action, turn] = id.split("-")
+        if (action === "pick" && (reply.outcome.outcome !== "selected" || reply.outcome.optionId !== "runner-1"))
+          throw Error("The question did not receive the ACP option ID")
+        if (action === "dismiss" && reply.outcome.outcome !== "cancelled")
+          throw Error("Dismissing the question did not cancel the ACP request")
+        chunk("agent_message_chunk", action === "pick" ? "Bun was selected" : "Choice was dismissed")
+        return result(Number(turn), { stopReason: "end_turn" })
       }
       if (id === "permission") {
         chunk("agent_message_chunk", reply.outcome.optionId === "yes" ? "Mock edit approved" : "Mock edit denied")

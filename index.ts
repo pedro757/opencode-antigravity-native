@@ -10,8 +10,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Acp, AcpError } from "./acp"
 import { attachmentBlocks } from "./attachments"
-import { Antigravity, type Answers, type Question, type Work } from "./rpc"
-import { elicitation, validAnswers } from "./questions"
+import { Antigravity, type Work } from "./rpc"
+import { elicitation, nativeQuestion, readAnswers, type Answers, type NativeQuestion, type Question } from "./questions"
 
 const providerID = Provider.ID.make("antigravity-acp")
 const sdkPackage = "@local/antigravity-acp"
@@ -131,7 +131,10 @@ export default Plugin.define({
     const running = new Map<string, View>()
     const steers = new Map<string, Steer>()
     let attachmentDirectory: Promise<string> | undefined
-    const questions = new Map<string, { sessionID: string; form: Question; finish: (answer?: Answers) => void }>()
+    const questions = new Map<string, {
+      form: NativeQuestion
+      finish: (answer?: Readonly<Record<string, unknown>>) => void
+    }>()
     const work = new Map<string, { steps: Work[]; agents: Map<string, Work>; replies: string[] }>()
     const detached = new Map<string, { text: string; timer?: ReturnType<typeof setTimeout> }>()
     const readClients = new Set<Acp>()
@@ -145,26 +148,17 @@ export default Plugin.define({
         const { sessionID } = input as { sessionID: string }
         const activity = work.get(sessionID)
         return {
-          questions: [...questions.values()].filter((item) => item.sessionID === sessionID).map((item) => item.form),
           steps: activity?.steps ?? [],
           agents: [...(activity?.agents.values() ?? [])],
           replies: activity?.replies ?? [],
         }
       },
-      answer: async (input) => {
-        const { sessionID, id, answers } = input as { sessionID: string; id: string; answers?: Answers }
-        const question = questions.get(id)
-        if (!question || question.sessionID !== sessionID) return { ok: false }
-        if (answers && !validAnswers(question.form, answers)) throw new Error("Invalid Antigravity answer")
-        question.finish(answers && Object.fromEntries(question.form.fields.flatMap(({ id }) =>
-          Object.hasOwn(answers, id) ? [[id, answers[id]]] : [])))
-        return { ok: true }
-      },
+      questions: async () => ({ questions: [...questions.values()].map(({ form }) => form) }),
       stop: async (input) => {
         const { sessionID } = input as { sessionID: string }
         const item = threads.get(sessionID)
         if (!item && !active.has(sessionID)) return { ok: false }
-        for (const question of questions.values()) if (question.sessionID === sessionID) question.finish()
+        for (const question of questions.values()) if (question.form.sessionID === sessionID) question.finish()
         if (item && !active.has(sessionID)) item.connection.client.notify("session/cancel", { sessionId: item.id })
         const { interrupted } = await ctx.session.interrupt({ sessionID, resume: false })
         return { ok: Boolean(item || interrupted) }
@@ -210,18 +204,20 @@ export default Plugin.define({
       }
     }
 
-    function ask(view: View, definition: Omit<Question, "id">) {
+    function ask(view: View, connection: AbortSignal, definition: Question) {
       return new Promise<Answers | undefined>((resolve) => {
-        if (closed || view.signal.aborted) return resolve(undefined)
-        const form = { ...definition, id: crypto.randomUUID() }
+        const signal = AbortSignal.any([view.signal, connection])
+        if (closed || signal.aborted) return resolve(undefined)
+        const form = nativeQuestion(view.sessionID, definition)
         const cancel = () => finish()
-        const finish = (answers?: Answers) => {
-          view.signal.removeEventListener("abort", cancel)
-          questions.delete(form.id)
-          resolve(answers)
+        const finish = (answers?: Readonly<Record<string, unknown>>) => {
+          if (!questions.delete(form.id)) return
+          signal.removeEventListener("abort", cancel)
+          resolve(answers && readAnswers(definition, answers))
+          if (!closed) void rpc.events.emit("question", { sessionID: view.sessionID }).catch(() => {})
         }
-        questions.set(form.id, { sessionID: view.sessionID, form, finish })
-        view.signal.addEventListener("abort", cancel, { once: true })
+        questions.set(form.id, { form, finish })
+        signal.addEventListener("abort", cancel, { once: true })
         void rpc.events.emit("question", { sessionID: view.sessionID }).catch(cancel)
       })
     }
@@ -269,7 +265,7 @@ export default Plugin.define({
         activity.agents.set(update.toolCallId, {
           title: previous?.title || title || "Antigravity subagent", status,
           updates: updates.at(-1) === entry ? updates : [...updates.slice(-19), entry],
-          child,
+          ...(child ? { child } : {}),
         })
       }
     }
@@ -300,6 +296,7 @@ export default Plugin.define({
       if (closed) return Promise.reject(new Error(disconnected))
       const turns = new Map<string, View>()
       const commands = new Map<string, Set<string>>()
+      const connection = new AbortController()
       const client = Acp.launch(cwd, unrestricted, async (method, params) => {
         const view = turns.get(params?.sessionId)
         const stored = view ? undefined : [...threads.entries()].find(([, thread]) =>
@@ -310,13 +307,13 @@ export default Plugin.define({
         if (method === "elicitation/create") {
           const target = view ?? background
           const form = elicitation(params)
-          const content = target && form ? await ask(target, form) : undefined
+          const content = target && form ? await ask(target, connection.signal, form) : undefined
           return content ? { action: "accept", content } : { action: "cancel" }
         }
         if (method === "session/request_permission") {
           const target = view ?? background
           if (target && text(params?.toolCall?.toolCallId).startsWith("interaction_") && params.options?.length) {
-            const answer = await ask(target, {
+            const answer = await ask(target, connection.signal, {
               title: text(params.toolCall.title) || "Antigravity question",
               fields: [{ id: "choice", type: "string", title: text(params.toolCall.title) || "Choose an option",
                 required: true, choices: params.options.map((option: { name?: string; optionId: string }) =>
@@ -338,6 +335,7 @@ export default Plugin.define({
         if (view && !view.cancelled) view.update(params.update)
         if (stored) detachedUpdate(stored[0], params.update)
       }, () => {
+        connection.abort()
         channel.connection = undefined
         for (const [sessionID, item] of threads) {
           if (item.connection.client === client) threads.delete(sessionID)
@@ -722,6 +720,15 @@ export default Plugin.define({
     const lifetime = new AbortController()
     void (async () => {
       for await (const event of ctx.event.subscribe({
+        types: ["form.replied", "form.cancelled"], signal: lifetime.signal,
+      })) {
+        const question = questions.get(event.data.id)
+        if (question?.form.sessionID === event.data.sessionID)
+          question.finish(event.type === "form.replied" ? event.data.answer : undefined)
+      }
+    })().catch(() => {})
+    void (async () => {
+      for await (const event of ctx.event.subscribe({
         types: ["session.deleted", "session.inbox.enqueued"], signal: lifetime.signal,
       })) {
         if (event.type === "session.inbox.enqueued") {
@@ -746,7 +753,7 @@ export default Plugin.define({
         work.delete(id)
         clearTimeout(detached.get(id)?.timer)
         detached.delete(id)
-        for (const question of questions.values()) if (question.sessionID === id) question.finish()
+        for (const question of questions.values()) if (question.form.sessionID === id) question.finish()
         if (current?.connection.caps.sessionCapabilities?.close)
           await current.connection.client.request("session/close", { sessionId: current.id }).catch(() => {})
         await ctx.storage.remove(`acp/${id}`)

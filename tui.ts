@@ -1,9 +1,15 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { KeyEvent } from "@opentui/core"
-import { Antigravity, type Answers, type Question, type Work } from "./rpc"
+import { questionSource, type NativeQuestion } from "./questions"
+import { Antigravity, type Work } from "./rpc"
 
 const providerID = "antigravity-acp"
 const interactive = "antigravity-acp/interactive"
+
+function hasTag(error: unknown, ...tags: string[]) {
+  return typeof error === "object" && error !== null && "_tag" in error &&
+    typeof error._tag === "string" && tags.includes(error._tag)
+}
 
 export default Plugin.define({
   id: "local.antigravity-native",
@@ -11,47 +17,59 @@ export default Plugin.define({
     const session = ctx.client.session
     const prompt = session.prompt
     let pending: { text: string; sessionID?: string; forkOf?: string; expires: number } | undefined
-    let answering = false
+    const lifetime = new AbortController()
+    const questionSync = new Map<string, Promise<void>>()
 
     const client = () => ctx.client.rpc(Antigravity)
     const request = () => ({ location: ctx.location })
     const status = async (sessionID: string) => await client().status({ sessionID }, request()) as {
-      questions: Question[]; steps: Work[]; agents: Work[]; replies: string[]
+      steps: Work[]; agents: Work[]; replies: string[]
     }
     const sessionID = () => {
       const route = ctx.ui.router.current()
       return route.type === "session" ? route.sessionID : undefined
     }
-    const answer = async (id: string) => {
-      if (answering) return
-      answering = true
-      try {
-        const [form] = (await status(id)).questions
-        if (!form) return
-        const values: Answers = Object.create(null)
-        for (const field of form.fields) {
-          const value = field.choices
-            ? await ctx.ui.dialog.select({ title: field.title, options: field.choices })
-            : await ctx.ui.dialog.prompt({ title: field.title })
-          if (value === undefined) {
-            await client().answer({ sessionID: id, id: form.id }, request())
-            return
-          }
-          if (value === "" && !field.required) continue
-          values[field.id] = field.type === "integer" || field.type === "number" ? Number(value) : value
+    const syncQuestions = (location = ctx.location) => {
+      const key = location?.directory ?? ""
+      const previous = questionSync.get(key) ?? Promise.resolve()
+      const next = previous.catch(() => {}).then(async () => {
+        const { signal } = lifetime
+        if (signal.aborted || location?.workspaceID) return
+        // The server plugin SDK does not expose form creation. Register its
+        // pending questions through the TUI's authenticated session client.
+        const { data: forms } = await ctx.client.form.list({ location }, { signal })
+        const { questions } = await client().questions({}, { location, signal }) as { questions: NativeQuestion[] }
+        const pending = new Set(questions.map(({ id }) => id))
+        const existing = new Set(forms.map(({ id }) => id))
+        for (const form of forms) {
+          if (form.metadata?.source !== questionSource || pending.has(form.id)) continue
+          await session.form.cancel({ sessionID: form.sessionID, formID: form.id }, { signal }).catch((error) => {
+            if (!hasTag(error, "FormAlreadySettledError", "FormNotFoundError", "SessionNotFoundError")) throw error
+          })
         }
-        await client().answer({ sessionID: id, id: form.id, answers: values }, request())
-      } catch (error) {
-        const message = error instanceof Error ? error.message : JSON.stringify(error)
-        await ctx.ui.dialog.alert({ title: "Antigravity question", message })
-      } finally {
-        answering = false
-      }
+        for (const question of questions) {
+          if (existing.has(question.id)) continue
+          await session.form.create(question, { signal }).catch((error) => {
+            if (!hasTag(error, "ConflictError", "SessionNotFoundError")) throw error
+          })
+        }
+      })
+      questionSync.set(key, next)
+      return next.finally(() => { if (questionSync.get(key) === next) questionSync.delete(key) })
     }
-    const off = client().events.on("question", (event) => {
-      const data = event.data as { sessionID: string }
-      if (sessionID() === data.sessionID) void answer(data.sessionID)
+    const off = client().events.on("question", async (event) => {
+      await syncQuestions(event.location).catch(() => {
+        if (!lifetime.signal.aborted)
+          ctx.ui.toast.show({ title: "Antigravity question", message: "Could not sync questions. Retry with /agy-answer.", variant: "error" })
+      })
     })
+    const syncCurrent = () => {
+      const id = sessionID()
+      const location = id ? ctx.data.session.get(id)?.location : undefined
+      return syncQuestions(location)
+    }
+    const offConnected = ctx.data.on("server.connected", () => { void syncCurrent().catch(() => {}) })
+    void syncCurrent().catch(() => {})
     const offBackground = client().events.on("background", (event) => {
       const data = event.data as { sessionID: string }
       ctx.ui.toast.show({ title: "Antigravity background reply", message: "Open /agy-work to read it.", sessionID: data.sessionID })
@@ -61,10 +79,7 @@ export default Plugin.define({
       commands: [
         {
           id: "antigravity.answer", title: "Answer Antigravity", slash: { name: "agy-answer" }, palette: true,
-          async run() {
-            const id = sessionID()
-            if (id) await answer(id)
-          },
+          run: syncCurrent,
         },
         {
           id: "antigravity.work", title: "Show Antigravity work", slash: { name: "agy-work" }, palette: true,
@@ -146,7 +161,9 @@ export default Plugin.define({
     ctx.renderer.keyInput.prependListener("keypress", enter)
 
     return () => {
+      lifetime.abort()
       off()
+      offConnected()
       offBackground()
       pending = undefined
       ctx.renderer.keyInput.off("keypress", enter)

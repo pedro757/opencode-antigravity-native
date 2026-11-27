@@ -6,7 +6,7 @@ OpenCode build, separate OpenCode service, or separate UI is required.
 
 ## Install
 
-Requires OpenCode v2 (tested with **2.4.1**) and the official
+Requires OpenCode v2 (tested with **2.4.2**) and the official
 [Antigravity CLI](https://antigravity.google/docs/cli/acp) (`agy` on the OpenCode
 server's `PATH`, tested with **1.5.15**). Sign in with `agy` if you haven't
 already. The plugin does not read or copy sign-in tokens.
@@ -76,10 +76,10 @@ or tools. Later messages continue in the new conversation.
 - Attach files in the native composer. The bridge sends supported image and
   audio blocks directly, embeds small text files, and supplies other files as
   links to private temporary copies.
-- Answer Antigravity questions from their dialogs, or use `/agy-answer` to
-  reopen a pending question. `/agy-work` shows task steps, reported subagent
-  updates, child transcripts when Antigravity exposes them, and recent
-  background replies. `/agy-stop` also stops detached work.
+- Answer Antigravity questions in OpenCode's built-in question menu. Use
+  `/agy-answer` to refresh pending questions. `/agy-work` shows task steps,
+  reported subagent updates, child transcripts when Antigravity exposes them,
+  and recent background replies. `/agy-stop` also stops detached work.
 - The next prompt picks up a side-chat result brought back by `better-sidechats`.
   On switching back from another provider, rewinding past a delivered prompt,
   or losing a native session, Antigravity rebuilds from OpenCode's retained

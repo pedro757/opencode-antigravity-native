@@ -13,6 +13,7 @@ parser.add_argument("--checkout", help="Optional development checkout; defaults 
 mode = parser.add_mutually_exclusive_group()
 mode.add_argument("--real-catalog", action="store_true", help="Discover only; never send a live prompt")
 mode.add_argument("--subagent", choices=["enabled", "disabled"], help="Test native delegation with mock agents")
+mode.add_argument("--full-access", action="store_true", help="Test opt-in approval skipping and Plan isolation with a mock agent")
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 workspace = tempfile.TemporaryDirectory(prefix="antigravity-native-test-", ignore_cleanup_errors=True)
@@ -48,6 +49,11 @@ def send(text):
 
 
 settings = {"plugins": [str(here)]}
+if args.full_access:
+    settings = {
+        "plugins": [{"package": str(here), "options": {"fullAccess": True}}],
+        "agents": {"plan": {"model": "antigravity-acp/gemini-test"}},
+    }
 if args.subagent:
     settings = {
         "plugins": [
@@ -92,11 +98,18 @@ try:
         send("Hello native")
         wait("Mock reply: Hello native")
         send("Approve mock")
-        wait("Edit mock.txt")
-        keys("Escape")
-        wait("Mock edit denied")
-        send("Second message")
-        wait("Mock reply: Second message")
+        if args.full_access:
+            wait("Mock edit approved without prompting")
+            keys("BTab")
+            wait("Plan")
+            send("Check plan")
+            wait("Plan resumed in sandbox")
+        else:
+            wait("Edit mock.txt")
+            keys("Escape")
+            wait("Mock edit denied")
+            send("Second message")
+            wait("Mock reply: Second message")
     print("Native TUI " + ("real catalog OK (no prompt sent)" if args.real_catalog else "mock smoke passed"))
 finally:
     subprocess.run([*tmux, "kill-server"], capture_output=True, check=False)

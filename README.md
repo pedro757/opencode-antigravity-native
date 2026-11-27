@@ -45,6 +45,12 @@ actions Antigravity doesn't ask about. Set rules you want applied to all
 Antigravity actions in Antigravity's `/permissions`. OpenCode's Plan agent
 requests Antigravity's native Plan mode.
 
+To allow Antigravity to run tools without approval prompts or the terminal
+sandbox, set `fullAccess: true` in the plugin entry's `options` in
+`opencode.jsonc`. This uses `agy acp --dangerously-skip-permissions` for
+Antigravity chats and enabled subagents. OpenCode's Plan agent still uses a
+sandboxed ACP process with approval prompts. Full access is off by default.
+
 This is an experimental third-party integration. It uses OpenCode TUI
 internals that can change between releases. Interactive chats support text
 entered with Enter; they do not accept headless runs or queued prompts. The
@@ -85,6 +91,7 @@ transcript, and uses the same `agy` sign-in. Google
 ```sh
 bun test acp.test.ts
 python3 test-tui.py
+python3 test-tui.py --full-access
 python3 test-tui.py --subagent enabled
 python3 test-tui.py --subagent disabled
 ```

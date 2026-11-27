@@ -28,8 +28,10 @@ type Setup = {
 }
 type Capabilities = { sessionCapabilities?: { close?: object; resume?: object } }
 type Usage = { inputTokens?: number; outputTokens?: number; thoughtTokens?: number; cachedReadTokens?: number; cachedWriteTokens?: number }
-type View = { controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>; sessionID: string; agent?: string; cancelled: boolean }
-type Thread = { id: string; options: Config[]; closeAfter: boolean }
+type View = { sessionID: string; agent?: string; cancelled: boolean; update: (update: unknown) => void }
+type Connection = { client: Acp; caps: Capabilities; turns: Map<string, View> }
+type Channel = { connection?: Connection; opening?: Promise<Connection> }
+type Thread = { id: string; options: Config[]; connection: Connection }
 
 function configs(setup: Setup): Config[] {
   if (setup.configOptions?.length) return setup.configOptions
@@ -52,51 +54,60 @@ export default Plugin.define({
     const cwd = ctx.location.directory
     if (ctx.location.workspaceID) return
     const allowSubagents = ctx.options.allowSubagents === true
+    const fullAccess = ctx.options.fullAccess === true
     const tickets = new Map<string, { sessionID: string; parentID?: string; text: string }>()
     const threads = new Map<string, Thread>()
-    const turns = new Map<string, View>()
-    let connection: { client: Acp; caps: Capabilities } | undefined
-    let opening: Promise<{ client: Acp; caps: Capabilities }> | undefined
+    const active = new Set<string>()
+    const channels: Record<"restricted" | "unrestricted", Channel> = { restricted: {}, unrestricted: {} }
     let closed = false
-    let engaged = 0
     const state = { models: [] as Model.Info[] }
 
-    function connect() {
-      if (connection) return Promise.resolve(connection)
-      if (opening) return opening
+    function connect(unrestricted: boolean) {
+      const channel = channels[unrestricted ? "unrestricted" : "restricted"]
+      if (channel.connection) return Promise.resolve(channel.connection)
+      if (channel.opening) return channel.opening
       if (closed) return Promise.reject(new Error(disconnected))
-      const client = Acp.launch(cwd, (method, params) => {
+      const turns = new Map<string, View>()
+      const client = Acp.launch(cwd, unrestricted, (method, params) => {
         const view = turns.get(params?.sessionId)
         if (method === "session/request_permission") return permission(ctx, view, params)
         if (method !== "session/update") throw new AcpError(`Client does not support ${method}`, -32601)
-        if (!view?.cancelled) updates.get(params?.sessionId)?.(params.update)
+        if (view && !view.cancelled) view.update(params.update)
       }, () => {
-        connection = undefined
-        threads.clear()
+        channel.connection = undefined
+        for (const [sessionID, item] of threads) {
+          if (item.connection.client === client) threads.delete(sessionID)
+        }
       })
-      opening = client.request<{ protocolVersion: number; agentCapabilities?: Capabilities }>("initialize", {
+      channel.opening = client.request<{ protocolVersion: number; agentCapabilities?: Capabilities }>("initialize", {
         protocolVersion: 1,
         clientCapabilities: {},
         clientInfo: { name: "opencode-antigravity-client", title: "OpenCode – Antigravity Client", version: "0.1.0" },
       }).then((result) => {
         if (closed || result.protocolVersion !== 1) throw new Error(disconnected)
-        connection = { client, caps: result.agentCapabilities ?? {} }
-        return connection
+        channel.connection = { client, caps: result.agentCapabilities ?? {}, turns }
+        return channel.connection
       }).catch((error) => {
         client.close()
         throw error
-      }).finally(() => { opening = undefined })
-      return opening
+      }).finally(() => { channel.opening = undefined })
+      return channel.opening
     }
 
-    const updates = new Map<string, (update: unknown) => void>()
     const scope = { providerID }
     const status = (error: unknown) =>
       error instanceof AcpError && error.code === -32000 ? new Error(disconnected) : error
 
-    async function thread(sessionID: string, linked: { client: Acp; caps: Capabilities }) {
+    async function thread(sessionID: string, linked: Connection) {
       const current = threads.get(sessionID)
-      if (current) return current
+      if (current?.connection === linked) return current
+      if (current) {
+        // The approval flag belongs to the ACP process. Move the conversation when switching to or from Plan.
+        if (!current.connection.caps.sessionCapabilities?.close || !linked.caps.sessionCapabilities?.resume)
+          throw new Error("This Antigravity version cannot switch permissions in an existing session. Start a new session.")
+        await current.connection.client.request("session/close", { sessionId: current.id })
+        threads.delete(sessionID)
+      }
       const oldID = await ctx.storage.get(`acp/${sessionID}`)
       const input = { cwd, mcpServers: [] }
       const saved = typeof oldID === "string" && linked.caps.sessionCapabilities?.resume
@@ -109,7 +120,7 @@ export default Plugin.define({
         : undefined
       const setup = saved ?? await linked.client.request<Setup>("session/new", input)
       if (!setup.sessionId) throw new Error("Antigravity did not return a conversation ID.")
-      const item = { id: setup.sessionId, options: configs(setup), closeAfter: Boolean(linked.caps.sessionCapabilities?.close) }
+      const item = { id: setup.sessionId, options: configs(setup), connection: linked }
       await ctx.storage.set(`acp/${sessionID}`, item.id)
       threads.set(sessionID, item)
       return item
@@ -159,19 +170,21 @@ export default Plugin.define({
               : "Send a new message with Enter in the native Antigravity TUI. Background prompts and replays are disabled.")
           tickets.delete(key)
           if (request.abortSignal?.aborted) throw request.abortSignal.reason
+          if (active.has(sessionID)) throw new Error("Antigravity is already answering in this session.")
           const agent = request.headers?.["x-antigravity-agent"]
           const reset = new AbortController()
           let stop: (() => void) | undefined
           const stream = new ReadableStream<LanguageModelV3StreamPart>({
             start(controller) {
-              const view = { controller, sessionID, agent, cancelled: false }
+              const renderer = render(controller)
+              const view = { sessionID, agent, cancelled: false, update: renderer.update }
               stop = () => { view.cancelled = true; reset.abort() }
               const signal = request.abortSignal ? AbortSignal.any([reset.signal, request.abortSignal]) : reset.signal
-              engaged++
+              active.add(sessionID)
               void (async () => {
-                const linked = await connect()
+                const linked = await connect(fullAccess && agent !== "plan")
                 const item = await thread(sessionID, linked)
-                const client = linked.client
+                const { client, turns } = linked
                 if (turns.has(item.id)) throw new Error("Antigravity is already answering in this session.")
                 signal.throwIfAborted()
                 await select(client, item, "model", modelId)
@@ -179,9 +192,7 @@ export default Plugin.define({
                 // Preserve a real read-only agent mode. Never silently substitute a writable mode for Plan.
                 await select(client, item, "mode", agent === "plan" ? "plan" : "default", agent === "plan")
                 signal.throwIfAborted()
-                const renderer = render(controller)
                 turns.set(item.id, view)
-                updates.set(item.id, renderer.update)
                 const cancel = () => client.notify("session/cancel", { sessionId: item.id })
                 signal.addEventListener("abort", cancel, { once: true })
                 try {
@@ -205,12 +216,11 @@ export default Plugin.define({
                   controller.close()
                 } finally {
                   signal.removeEventListener("abort", cancel)
-                  updates.delete(item.id)
                   turns.delete(item.id)
                 }
               })().catch((error) => {
                 if (!view.cancelled) controller.error(status(error))
-              }).finally(() => { engaged-- })
+              }).finally(() => { active.delete(sessionID) })
             },
             cancel() { stop?.() },
           })
@@ -279,8 +289,8 @@ export default Plugin.define({
         const id = event.data.sessionID
         const current = threads.get(id)
         threads.delete(id)
-        if (current?.closeAfter && connection)
-          await connection.client.request("session/close", { sessionId: current.id }).catch(() => {})
+        if (current?.connection.caps.sessionCapabilities?.close)
+          await current.connection.client.request("session/close", { sessionId: current.id }).catch(() => {})
         await ctx.storage.remove(`acp/${id}`)
       }
     })().catch(() => {})
@@ -292,7 +302,7 @@ export default Plugin.define({
         await ctx.provider.reload()
         if (typeof cached.at === "number" && Date.now() - cached.at < 30 * 60_000) return
       }
-      const { client, caps } = await connect()
+      const { client, caps } = await connect(false)
       try {
         const setup = await client.request<Setup>("session/new", { cwd, mcpServers: [] })
         const values = configs(setup)
@@ -313,14 +323,14 @@ export default Plugin.define({
         if (setup.sessionId && caps.sessionCapabilities?.close)
           await client.request("session/close", { sessionId: setup.sessionId })
       } finally {
-        if (!engaged && !threads.size) client.close()
+        if (!active.size && !threads.size) client.close()
       }
     })().catch((error) => { if (!closed) console.warn("Antigravity ACP: could not load models", status(error)) })
 
     return () => {
       closed = true
       lifetime.abort()
-      connection?.client.close()
+      for (const channel of Object.values(channels)) channel.connection?.client.close()
       tickets.clear()
       threads.clear()
     }
@@ -328,7 +338,7 @@ export default Plugin.define({
 })
 
 type ToolCall = { id: string; name: string; input: unknown; done: boolean }
-function render(controller: View["controller"]) {
+function render(controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>) {
   const calls = new Map<string, ToolCall>()
   let last: "text" | "reasoning" | undefined
   let index = 0

@@ -36,9 +36,10 @@ export class Acp {
     })
   }
 
-  static launch(cwd: string, handle: (method: string, params: any) => unknown, onClose: (error: Error) => void) {
+  static launch(cwd: string, fullAccess: boolean, handle: (method: string, params: any) => unknown, onClose: (error: Error) => void) {
+    const args = ["acp", fullAccess ? "--dangerously-skip-permissions" : "--sandbox"]
     return new Acp(
-      spawn(process.env.OPENCODE_ANTIGRAVITY_PATH || "agy", ["acp", "--sandbox"], { cwd, stdio: "pipe" }),
+      spawn(process.env.OPENCODE_ANTIGRAVITY_PATH || "agy", args, { cwd, stdio: "pipe" }),
       handle,
       onClose,
     )

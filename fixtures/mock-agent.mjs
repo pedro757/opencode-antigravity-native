@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline"
 
+const fullAccess = process.argv.includes("--dangerously-skip-permissions")
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n")
 const configOptions = [
   { id: "model", category: "model", type: "select", currentValue: "gemini-test", options: [
@@ -11,10 +12,13 @@ const configOptions = [
   { id: "thought_level", category: "thought_level", type: "select", currentValue: "low", options: [
     { value: "low", name: "Low" }, { value: "high", name: "High" },
   ] },
+  { id: "mode", category: "mode", type: "select", currentValue: "default", options: [
+    { value: "default", name: "Default" }, { value: "plan", name: "Plan" },
+  ] },
 ]
 let approvalFor
 let slow
-const sessionId = "test"
+const sessionId = fullAccess ? "unrestricted-test" : "test"
 let currentSession = sessionId
 const update = (update) => send({ method: "session/update", params: { sessionId: currentSession, update } })
 const chunk = (sessionUpdate, text) => update({ sessionUpdate, content: { type: "text", text } })
@@ -24,9 +28,10 @@ rl.on("line", (line) => {
   const { id, method, params, result: reply } = JSON.parse(line)
   switch (method) {
     case "initialize":
-      return result(id, { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { list: {}, close: {} } } })
+      return result(id, { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { list: {}, close: {}, resume: {} } } })
     case "session/new":
     case "session/load":
+    case "session/resume":
       if ("systemPrompt" in params || params.mcpServers.length) throw Error("Expected a thin client")
       currentSession = params.sessionId ?? sessionId
       if (method === "session/load") {
@@ -44,7 +49,18 @@ rl.on("line", (line) => {
     case "session/prompt": {
       if (params.prompt.length !== 1 || params.prompt[0].type !== "text") throw Error("Expected a raw user prompt")
       const text = params.prompt[0].text
+      if (text === "Check plan") {
+        if (fullAccess || configOptions.find((option) => option.id === "mode").currentValue !== "plan")
+          throw Error("Expected a sandboxed Plan session")
+        if (currentSession !== "unrestricted-test") throw Error("Expected Plan to resume the same conversation")
+        chunk("agent_message_chunk", "Plan resumed in sandbox")
+        return result(id, { stopReason: "end_turn" })
+      }
       if (text === "Approve mock") {
+        if (fullAccess) {
+          chunk("agent_message_chunk", "Mock edit approved without prompting")
+          return result(id, { stopReason: "end_turn" })
+        }
         approvalFor = id
         send({ id: "permission", method: "session/request_permission", params: {
           sessionId: currentSession, toolCall: { title: "Mock edit", content: [{ type: "diff", path: "mock.txt", oldText: "old", newText: "new" }] },

@@ -51,7 +51,8 @@ export default Plugin.define({
   async setup(ctx) {
     const cwd = ctx.location.directory
     if (ctx.location.workspaceID) return
-    const tickets = new Map<string, { sessionID: string; text: string }>()
+    const allowSubagents = ctx.options.allowSubagents === true
+    const tickets = new Map<string, { sessionID: string; parentID?: string; text: string }>()
     const threads = new Map<string, Thread>()
     const turns = new Map<string, View>()
     let connection: { client: Acp; caps: Capabilities } | undefined
@@ -144,12 +145,19 @@ export default Plugin.define({
         async doGenerate() { throw new Error("Antigravity only accepts interactive streaming prompts.") },
         async doStream(request: LanguageModelV3CallOptions) {
           const sessionID = request.headers?.["x-opencode-session-id"]
+          const parentID = request.headers?.["x-opencode-parent-session-id"]
           const settings = request.providerOptions?.[providerID]
           const key = text(settings?.ticket)
           const ticket = tickets.get(key)
+          if (parentID && !allowSubagents)
+            throw new Error(
+              "Antigravity subagent delegation is disabled. Set the plugin's allowSubagents option to true to opt in.",
+            )
+          if (!sessionID || !ticket || ticket.sessionID !== sessionID || ticket.parentID !== parentID)
+            throw new Error(parentID
+              ? "Send a new task to this Antigravity subagent. Old prompts are not replayed."
+              : "Send a new message with Enter in the native Antigravity TUI. Background prompts and replays are disabled.")
           tickets.delete(key)
-          if (!sessionID || request.headers?.["x-opencode-parent-session-id"] || ticket?.sessionID !== sessionID)
-            throw new Error("Send a new message with Enter in the native Antigravity TUI. Background prompts and replays are disabled.")
           if (request.abortSignal?.aborted) throw request.abortSignal.reason
           const agent = request.headers?.["x-antigravity-agent"]
           const reset = new AbortController()
@@ -223,14 +231,22 @@ export default Plugin.define({
     await ctx.aisdk.hook("sdk", (event) => {
       if (event.package === sdkPackage) event.sdk = { languageModel: language }
     }, scope)
-    await ctx.session.hook("prompt", (event) => {
-      if (event.metadata?.[interactive] !== true) return
-      delete event.metadata[interactive]
+    await ctx.session.hook("prompt", async (event) => {
+      const direct = event.metadata?.[interactive] === true
+      if (direct) delete event.metadata?.[interactive]
+      if (!direct && !allowSubagents) return
+
+      const session = allowSubagents
+        ? await ctx.session.get({ sessionID: event.sessionID }).catch(() => undefined)
+        : undefined
+      const parentID = session?.parentID
+      if (!direct && (!parentID || session?.model?.providerID !== providerID)) return
+
       const key = crypto.randomUUID()
-      // Only a fresh composer submission can claim a turn. Do not restore these tickets after reload or restart.
+      // Each admission authorizes one ACP prompt. Continuations and restart recovery cannot replay it.
       if (tickets.size >= 100) tickets.delete(tickets.keys().next().value!)
-      tickets.set(key, { sessionID: event.sessionID, text: event.prompt.text })
-      event.metadata[tokenKey] = key
+      tickets.set(key, { sessionID: event.sessionID, parentID, text: event.prompt.text })
+      event.metadata = { ...event.metadata, [tokenKey]: key }
     })
     await ctx.session.hook("context", (event) => {
       event.tools = {}

@@ -46,20 +46,49 @@ Antigravity actions in Antigravity's `/permissions`. OpenCode's Plan agent
 requests Antigravity's native Plan mode.
 
 This is an experimental third-party integration. It uses OpenCode TUI
-internals that can change between releases. It supports text only and is not a
-backend for headless runs, background jobs, or queued prompts. The interactive
-check is not a security boundary against another local API client. The plugin
-does not carry context between Antigravity and other providers. See Google's
+internals that can change between releases. Interactive chats support text
+entered with Enter; they do not accept headless runs or queued prompts. The
+interactive check is not a security boundary against another local API client.
+The plugin does not carry context between Antigravity and other providers. See Google's
 [ACP documentation](https://antigravity.google/docs/ide/extensions/acp) and
 [terms](https://antigravity.google/terms) for applicable usage limits.
+
+## Delegate from another OpenCode session
+
+Subagent support is opt-in. Replace the existing plugin entry with this object
+and add the agent under `agents` in `opencode.jsonc`. Choose a model listed
+under **Google Antigravity** in `/models`:
+
+```jsonc
+{
+  "plugins": [
+    { "package": "./antigravity-native", "options": { "allowSubagents": true } }
+  ],
+  "agents": {
+    "antigravity": {
+      "description": "Use Google Antigravity for an explicitly requested coding task.",
+      "mode": "subagent",
+      "model": "antigravity-acp/gemini-3.8-flash"
+    }
+  }
+}
+```
+
+In an OpenCode session running a different model, ask it to use the
+`antigravity` subagent. OpenCode opens a child session and reports its result
+back to the parent. Antigravity receives the delegated task, not the parent's
+transcript, and uses the same `agy` sign-in. Google
+[does not support agent-driven delegation on consumer plans](https://github.com/google-antigravity/antigravity-cli/issues/1493#issuecomment-6814901159).
 
 ## Test
 
 ```sh
 bun test acp.test.ts
 python3 test-tui.py
+python3 test-tui.py --subagent enabled
+python3 test-tui.py --subagent disabled
 ```
 
-The second test needs `tmux`, OpenCode, and Node.js and uses a mock agent in a
-temporary workspace. `python3 test-tui.py --real-catalog` optionally checks real
-model discovery with your existing local sign-in; it does not send a prompt.
+The TUI tests need `tmux`, OpenCode, and Node.js and use mock agents in a temporary
+workspace. `python3 test-tui.py --real-catalog` optionally checks real model
+discovery with your existing local sign-in; it does not send a prompt.

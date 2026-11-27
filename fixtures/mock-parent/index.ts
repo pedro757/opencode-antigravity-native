@@ -31,7 +31,6 @@ export default Plugin.define({
         capabilities: { input: ["text"], output: ["text"], tools: true },
       }],
     }))
-    await ctx.session.hook("title", (event) => { event.result = "Mock parent" }, { providerID })
     await ctx.aisdk.hook("sdk", (event) => {
       if (event.package !== packageName) return
       event.sdk = {
@@ -42,6 +41,12 @@ export default Plugin.define({
           supportedUrls: {},
           async doStream(options: { prompt: unknown }) {
             const history = JSON.stringify(options.prompt)
+            const titleRequest = history.includes("Reply with only the title.")
+            const title = history.includes("Ask mock")
+              ? history.includes("Here is the conversation so far:")
+                ? "Package manager selection discussed"
+                : "Choose a package manager"
+              : "Check child wiring"
             const useOtherProvider = history.includes("Ask the other provider")
             const lowVariant = history.includes("Delegate to Antigravity with low")
             const completed = history.includes("Mock reply: ") && history.includes("Check the child wiring")
@@ -50,7 +55,7 @@ export default Plugin.define({
             return {
               stream: new ReadableStream({
                 start(controller) {
-                  if (!started && !useOtherProvider) {
+                  if (!titleRequest && !started && !useOtherProvider) {
                     controller.enqueue({
                       type: "tool-call",
                       toolCallId: "mock-delegation",
@@ -63,13 +68,13 @@ export default Plugin.define({
                       }),
                     })
                   } else {
-                    const delta = useOtherProvider ? "Other provider answered" : completed ? "Parent received Antigravity reply" :
+                    const delta = titleRequest ? title : useOtherProvider ? "Other provider answered" : completed ? "Parent received Antigravity reply" :
                       blocked ? "Parent received delegation error" : "Parent is ready for the child report"
                     controller.enqueue({ type: "text-start", id: "parent" })
                     controller.enqueue({ type: "text-delta", id: "parent", delta })
                     controller.enqueue({ type: "text-end", id: "parent" })
                   }
-                  controller.enqueue({ type: "finish", finishReason: { unified: started || useOtherProvider ? "stop" : "tool-calls" }, usage })
+                  controller.enqueue({ type: "finish", finishReason: { unified: titleRequest || started || useOtherProvider ? "stop" : "tool-calls" }, usage })
                   controller.close()
                 },
               }),

@@ -54,6 +54,7 @@ def send(text):
 settings = {"plugins": [str(here)]}
 if args.features:
     settings["plugins"].append(str(here / "fixtures/mock-parent"))
+    settings["agents"] = {"title": {"model": "mock-parent/test"}}
 if args.full_access:
     settings = {
         "plugins": [{"package": str(here), "options": {"fullAccess": True}}],
@@ -148,6 +149,14 @@ try:
         wait("Submit")
         keys("Enter")
         wait("Question was answered")
+        wait("Choose a package manager")
+        send("/rename Antigravity chat")
+        wait("Antigravity chat")
+        wait("Choose a package manager", present=False)
+        keys("-l", "/rename ")
+        wait("/rename")
+        keys("Enter")
+        wait("Package manager selection discussed")
         send("Dismiss mock choice")
         wait("Choose the test runner")
         keys("Escape")

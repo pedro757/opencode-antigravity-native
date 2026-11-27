@@ -32,6 +32,10 @@ In OpenCode, run `/reload` if needed, open `/models`, and select a model under
 by your `agy acp` session. Use `/variants` to change the thinking level or
 restore **Default** for the selected model. Send a text prompt with **Enter**.
 
+Session titles use OpenCode's built-in title agent. For automatic titles, set
+`agents.title.model` to an available non-Antigravity model; the ACP bridge only
+accepts interactive prompts.
+
 ## How it works
 
 The plugin runs the official `agy acp` subprocess over stdio. Antigravity owns

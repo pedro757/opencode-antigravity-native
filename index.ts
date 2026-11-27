@@ -654,16 +654,6 @@ export default Plugin.define({
     await ctx.session.hook("model.request", (event) => {
       event.headers["x-antigravity-agent"] = event.agent
     }, scope)
-    await ctx.session.hook("title", async (event) => {
-      if (event.model.providerID === providerID) {
-        event.result = "Antigravity chat"
-        return
-      }
-      // The user's title agent can point at a different provider. Keep these
-      // chats from silently sending a second model call just to get a title.
-      const session = await ctx.session.get({ sessionID: event.sessionID }).catch(() => undefined)
-      if (session?.model?.providerID === providerID) event.result = "Antigravity chat"
-    })
     await ctx.session.hook("compaction", async (event) => {
       const sessionID = event.sessionID
       const messages = await ctx.session.context({ sessionID })
